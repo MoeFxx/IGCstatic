@@ -66,7 +66,6 @@
     const MAX_CONTEXT_TO_SEND = 1;    // (ignored if SEND_ONLY_LAST is true)
     const MAX_BYTES = 5 * 1024 * 1024; // 5 MB upload cap
 
-    // ==== THEME ====
     if (prefersDark) document.documentElement.classList.add('dark');
 
     // ==== ELEMENTS ====
@@ -79,40 +78,90 @@
     const fileInput = document.getElementById('fileInput');
     const attachBtn = document.getElementById('attach');
 
-    // ==== STATE (localStorage) ====
+    // ==== STATE ====
     const SESSION_KEY = 'n8nchat.session';
     const HISTORY_KEY = 'n8nchat.history';
     let session = localStorage.getItem(SESSION_KEY) || crypto.randomUUID();
     localStorage.setItem(SESSION_KEY, session);
     let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-
-    // temp (not stored in history/localStorage)
-    let attachedFile = null;
+    let attachedFile = null;  // temporary only
 
     // ==== HELPERS ====
     function saveHistory() {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     }
+
+    // Escape only for user messages
+    function escapeHTML(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // Convert assistant plain text to simple HTML:
+    // - **bold**, *italic*, clickable URLs, and lines starting with "* " become bullets.
+    function formatAssistantHTML(text) {
+      // If it's already HTML, trust it (coming from your own n8n flow)
+      if (/<[a-z][\s\S]*>/i.test(text)) return text;
+
+      // Safe-escape, then apply minimal formatting
+      let s = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+      // Bold and italic (very lightweight markdown)
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+      // Autolink URLs
+      s = s.replace(/(https?:\/\/[^\s)]+)(\))/g, '$1$2'); // keep trailing ) if link is inside parens
+      s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+
+      // Bullets: lines that start with "* "
+      const lines = s.split(/\r?\n/);
+      let out = [], inList = false;
+      for (const line of lines) {
+        const m = line.match(/^\s*\*\s+(.*)/);
+        if (m) {
+          if (!inList) { out.push('<ul>'); inList = true; }
+          out.push('<li>' + m[1] + '</li>');
+        } else {
+          if (inList) { out.push('</ul>'); inList = false; }
+          out.push(line);
+        }
+      }
+      if (inList) out.push('</ul>');
+      s = out.join('\n');
+
+      // Newlines to <br>
+      s = s.replace(/\n/g, '<br>');
+      return s;
+    }
+
     function addMsg(role, content) {
       const div = document.createElement('div');
       div.className = `msg ${role === 'user' ? 'user' : 'bot'}`;
-      div.innerHTML = content;
+
+      if (role === 'assistant') {
+        div.innerHTML = formatAssistantHTML(content); // render HTML
+      } else {
+        div.textContent = content; // keep user messages safe
+      }
+
       chatEl.appendChild(div);
       chatEl.scrollTop = chatEl.scrollHeight;
     }
+
     function renderHistory() {
       chatEl.innerHTML = '';
       for (const m of history) addMsg(m.role, m.content);
     }
+
     function setStatus(t) { statusEl.textContent = t || ''; }
 
-    // SAFE file -> base64 using FileReader (prevents call stack overflow)
+    // SAFE file -> base64 via FileReader (prevents call stack overflow)
     function fileToBase64(file) {
       return new Promise((resolve, reject) => {
         const r = new FileReader();
         r.onload = () => {
           const result = r.result || "";
-          const comma = result.indexOf(","); // strip "data:...;base64," prefix
+          const comma = result.indexOf(",");
           resolve(comma >= 0 ? result.slice(comma + 1) : result);
         };
         r.onerror = reject;
@@ -141,7 +190,7 @@
       if (!text && !attachedFile) return;
       input.value = '';
 
-      // Show user content (store only plain text in history)
+      // user message (never HTML-injected)
       if (text) {
         history.push({ role: 'user', content: text });
         addMsg('user', text);
@@ -151,7 +200,7 @@
       }
       saveHistory();
 
-      // Typing indicator
+      // typing indicator
       const typing = { role: 'assistant', content: '…' };
       history.push(typing); addMsg('assistant', '…'); setStatus('Thinking…');
 
@@ -166,12 +215,7 @@
             return;
           }
           const base64 = await fileToBase64(attachedFile);
-          fileData = {
-            name: attachedFile.name,
-            type: attachedFile.type,
-            size: attachedFile.size,
-            data: base64
-          };
+          fileData = { name: attachedFile.name, type: attachedFile.type, size: attachedFile.size, data: base64 };
         }
 
         const lastText = text || (attachedFile ? `[File: ${attachedFile.name}]` : '');
@@ -183,7 +227,7 @@
           session_id: session,
           messages: msgsToSend,
           last_user_message: lastText,
-          file: fileData, // sent to n8n, NOT stored in history
+          file: fileData,
           metadata: { client: 'static-site', ts: Date.now() }
         };
 
@@ -193,7 +237,7 @@
           body: JSON.stringify(payload)
         });
 
-        // Remove typing indicator before handling response
+        // remove typing
         history = history.filter(m => m !== typing);
 
         if (!res.ok) {
@@ -201,7 +245,7 @@
           throw new Error(errText || res.statusText);
         }
 
-        // Robust reply parsing: JSON or plain text
+        // JSON or plain text responses
         const ct = (res.headers.get('content-type') || '').toLowerCase();
         let reply = '';
         if (ct.includes('application/json')) {
@@ -209,11 +253,7 @@
           reply = (data && (data.reply || data.text || data.message || data.output)) || '[No reply]';
         } else {
           reply = (await res.text()) || '[No reply]';
-          // If plain text happens to be JSON, try to parse it
-          try {
-            const data = JSON.parse(reply);
-            reply = data.reply || data.text || data.message || data.output || reply;
-          } catch {}
+          try { const data = JSON.parse(reply); reply = data.reply || data.text || data.message || data.output || reply; } catch {}
         }
 
         history.push({ role: 'assistant', content: reply });
@@ -232,12 +272,9 @@
       }
     });
 
-    // Enter to send (Shift+Enter for newline)
+    // Enter to send (Shift+Enter = newline)
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        form.requestSubmit();
-      }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
     });
 
     clearBtn.addEventListener('click', () => {
