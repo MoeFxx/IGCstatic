@@ -29,7 +29,7 @@
 <body>
   <div class="wrap">
     <header>
-      <h1>🤖 Moe's BOT</h1>
+      <h1>🤖 My n8n Chatbot</h1>
       <div class="actions">
         <button id="clear">Clear chat</button>
         <button id="export">Export</button>
@@ -41,12 +41,12 @@
     <form id="composer">
       <textarea id="input" placeholder="Type a message..." rows="2" enterkeyhint="send"></textarea>
       <input type="file" id="fileInput" style="display:none" />
-      <button type="button" id="attach">📎</button>
+      <button type="button" id="attach" title="Attach a file">📎</button>
       <button class="send" type="submit">Send</button>
     </form>
 
     <div class="footer">
-      <span class="tiny">Powered by Moe</span>
+      <span class="tiny">Powered by n8n via Worker proxy</span>
       <span class="tiny" id="status"></span>
     </div>
   </div>
@@ -55,11 +55,14 @@
     // ==== CONFIG ====
     const WORKER_PROXY_URL = 'https://lessonplans.ftwmido.workers.dev/'; // your Worker URL
     const prefersDark = true;
-    const SEND_ONLY_LAST = true;
-    const MAX_CONTEXT_TO_SEND = 1;
+    const SEND_ONLY_LAST = true;      // send only the latest user message to n8n
+    const MAX_CONTEXT_TO_SEND = 1;    // (ignored if SEND_ONLY_LAST is true)
+    const MAX_BYTES = 5 * 1024 * 1024; // 5 MB upload cap (adjust if you want)
 
+    // ==== THEME ====
     if (prefersDark) document.documentElement.classList.add('dark');
 
+    // ==== ELEMENTS ====
     const chatEl = document.getElementById('chat');
     const form = document.getElementById('composer');
     const input = document.getElementById('input');
@@ -69,19 +72,20 @@
     const fileInput = document.getElementById('fileInput');
     const attachBtn = document.getElementById('attach');
 
+    // ==== STATE (localStorage) ====
     const SESSION_KEY = 'n8nchat.session';
     const HISTORY_KEY = 'n8nchat.history';
-
     let session = localStorage.getItem(SESSION_KEY) || crypto.randomUUID();
     localStorage.setItem(SESSION_KEY, session);
-
     let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+
+    // temp (not stored in history/localStorage)
     let attachedFile = null;
 
+    // ==== HELPERS ====
     function saveHistory() {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     }
-
     function addMsg(role, content) {
       const div = document.createElement('div');
       div.className = `msg ${role === 'user' ? 'user' : 'bot'}`;
@@ -89,16 +93,30 @@
       chatEl.appendChild(div);
       chatEl.scrollTop = chatEl.scrollHeight;
     }
-
     function renderHistory() {
       chatEl.innerHTML = '';
       for (const m of history) addMsg(m.role, m.content);
     }
-
     function setStatus(t) { statusEl.textContent = t || ''; }
 
+    // SAFE file -> base64 using FileReader (prevents call stack overflow)
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => {
+          const result = r.result || "";
+          const comma = result.indexOf(","); // strip "data:...;base64," prefix
+          resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+    }
+
+    // ==== INIT ====
     renderHistory();
 
+    // ==== EVENTS ====
     attachBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', () => {
       if (fileInput.files.length > 0) {
@@ -116,7 +134,7 @@
       if (!text && !attachedFile) return;
       input.value = '';
 
-      // Add to chat + history (but NOT base64 file content)
+      // Show user content (store only plain text in history)
       if (text) {
         history.push({ role: 'user', content: text });
         addMsg('user', text);
@@ -126,30 +144,39 @@
       }
       saveHistory();
 
+      // Typing indicator
       const typing = { role: 'assistant', content: '…' };
       history.push(typing); addMsg('assistant', '…'); setStatus('Thinking…');
 
       try {
         let fileData = null;
         if (attachedFile) {
-          const buf = await attachedFile.arrayBuffer();
+          if (attachedFile.size > MAX_BYTES) {
+            history = history.filter(m => m !== typing);
+            history.push({ role: 'assistant', content: `Error: File too large (> ${Math.round(MAX_BYTES/1024/1024)} MB)` });
+            saveHistory(); renderHistory(); setStatus('');
+            attachedFile = null; fileInput.value = '';
+            return;
+          }
+          const base64 = await fileToBase64(attachedFile);
           fileData = {
             name: attachedFile.name,
             type: attachedFile.type,
             size: attachedFile.size,
-            data: btoa(String.fromCharCode(...new Uint8Array(buf)))
+            data: base64
           };
         }
 
+        const lastText = text || (attachedFile ? `[File: ${attachedFile.name}]` : '');
         const msgsToSend = SEND_ONLY_LAST
-          ? [{ role: 'user', content: text || `[File: ${attachedFile?.name}]` }]
+          ? [{ role: 'user', content: lastText }]
           : history.filter(m => m.content !== '…').slice(-MAX_CONTEXT_TO_SEND);
 
         const payload = {
           session_id: session,
           messages: msgsToSend,
-          last_user_message: text || `[File: ${attachedFile?.name}]`,
-          file: fileData,   // file goes to n8n but not stored in history
+          last_user_message: lastText,
+          file: fileData, // sent to n8n, NOT stored in history
           metadata: { client: 'static-site', ts: Date.now() }
         };
 
@@ -159,9 +186,13 @@
           body: JSON.stringify(payload)
         });
 
+        // Remove typing indicator before handling response
         history = history.filter(m => m !== typing);
 
-        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || res.statusText);
+        }
         const data = await res.json();
         const reply = (data && (data.reply || data.text || data.message)) || '[No reply]';
 
@@ -181,7 +212,7 @@
       }
     });
 
-    // ENTER to send (Shift+Enter for newline)
+    // Enter to send (Shift+Enter for newline)
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
