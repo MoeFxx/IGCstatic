@@ -29,7 +29,7 @@
 <body>
   <div class="wrap">
     <header>
-      <h1>🤖 My n8n Chatbot</h1>
+      <h1>🤖 My BOT</h1>
       <div class="actions">
         <button id="clear">Clear chat</button>
         <button id="export">Export</button>
@@ -44,14 +44,14 @@
     </form>
 
     <div class="footer">
-      <span class="tiny">Powered by n8n via Worker proxy</span>
+      <span class="tiny">Powered By Moe!</span>
       <span class="tiny" id="status"></span>
     </div>
   </div>
 
   <script>
     // ==== CONFIG ====
-    const WORKER_PROXY_URL = 'https://YOUR-WORKER.workers.dev'; // ← replace with your Worker URL
+    const WORKER_PROXY_URL = 'https://lessonplans.ftwmido.workers.dev/'; // ← replace with your Worker URL
     const prefersDark = true;
     const SEND_ONLY_LAST = true;        // <<< send only the latest user message to n8n
     const MAX_CONTEXT_TO_SEND = 1;      //     (keep =1 if you truly want only the last turn)
