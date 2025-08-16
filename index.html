@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+< !DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -7,8 +7,10 @@
   <style>
     :root { --bg:#0b1020; --panel:#151c34; --text:#e8ecff; --muted:#9aa6d1; --accent:#7aa2ff; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text); }
-    .wrap { max-width: 780px; margin: 0 auto; padding: clamp(12px, 3vw, 24px); min-height:100dvh; display:flex; flex-direction:column; gap:16px; }
+    html, body { height: 100%; overflow: hidden; }   /* page never scrolls */
+   body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    .wrap { height: 100dvh; display:flex; flex-direction:column; gap:16px; max-width:780px; margin:0 auto; padding: clamp(12px, 3vw, 24px); }
+    .chat { flex:1; overflow:auto; display:flex; flex-direction:column; gap:10px; padding:4px; }
     header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     h1 { font-size: 18px; margin:0; font-weight:600; letter-spacing:.2px; }
     .actions { display:flex; gap:8px; }
@@ -194,7 +196,7 @@
           throw new Error(errText || res.statusText);
         }
         const data = await res.json();
-        const reply = (data && (data.reply || data.text || data.message)) || '[No reply]';
+        const reply = (data && (data.reply || data.text || data.message || data.output)) || '[No reply]';
 
         history.push({ role: 'assistant', content: reply });
         saveHistory();
