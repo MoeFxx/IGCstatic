@@ -116,6 +116,7 @@
       if (!text && !attachedFile) return;
       input.value = '';
 
+      // Add to chat + history (but NOT base64 file content)
       if (text) {
         history.push({ role: 'user', content: text });
         addMsg('user', text);
@@ -148,7 +149,7 @@
           session_id: session,
           messages: msgsToSend,
           last_user_message: text || `[File: ${attachedFile?.name}]`,
-          file: fileData,
+          file: fileData,   // file goes to n8n but not stored in history
           metadata: { client: 'static-site', ts: Date.now() }
         };
 
@@ -180,6 +181,7 @@
       }
     });
 
+    // ENTER to send (Shift+Enter for newline)
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
