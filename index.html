@@ -39,7 +39,7 @@
     <div id="chat" class="chat"></div>
 
     <form id="composer">
-      <textarea id="input" placeholder="Type a message..." required></textarea>
+      <textarea id="input" placeholder="Type a message..." required rows="2" enterkeyhint="send"></textarea>
       <button class="send" type="submit">Send</button>
     </form>
 
@@ -51,13 +51,13 @@
 
   <script>
     // ==== CONFIG ====
-    const WORKER_PROXY_URL = 'https://lessonplans.ftwmido.workers.dev/'; // ← replace with your Worker URL
+    const WORKER_PROXY_URL = 'https://YOUR-WORKER.workers.dev'; // ← replace with your Worker URL
     const prefersDark = true;
+    const SEND_ONLY_LAST = true;        // <<< send only the latest user message to n8n
+    const MAX_CONTEXT_TO_SEND = 1;      //     (keep =1 if you truly want only the last turn)
 
     // ==== THEME ====
-    if (prefersDark) {
-      document.documentElement.classList.add('dark');
-    }
+    if (prefersDark) document.documentElement.classList.add('dark');
 
     // ==== STATE ====
     const chatEl = document.getElementById('chat');
@@ -113,9 +113,15 @@
       setStatus('Thinking…');
 
       try {
+        // Build payload that sends ONLY the last message (or last N if you change MAX_CONTEXT_TO_SEND)
+        const msgsToSend = SEND_ONLY_LAST
+          ? [{ role: 'user', content: text }]
+          : history.filter(m => m.content !== '…').slice(-MAX_CONTEXT_TO_SEND);
+
         const payload = {
           session_id: session,
-          messages: history.filter(m => m.content !== '…'),
+          messages: msgsToSend,           // n8n can read this array
+          last_user_message: text,        // or read this single string, your choice
           metadata: { client: 'static-site', ts: Date.now() }
         };
 
@@ -140,10 +146,19 @@
         renderHistory();
         setStatus('');
       } catch (err) {
+        history = history.filter(m => m !== typing);
         history.push({ role: 'assistant', content: 'Error: ' + err.message });
         saveHistory();
         renderHistory();
         setStatus('');
+      }
+    });
+
+    // ENTER to send (Shift+Enter for newline). Works nicely on mobile too.
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        form.requestSubmit();
       }
     });
 
