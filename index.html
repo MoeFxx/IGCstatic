@@ -47,8 +47,8 @@
 
     <form id="composer">
       <textarea id="input" placeholder="Type a message..." rows="2" enterkeyhint="send"></textarea>
-      <input type="file" id="fileInput" style="display:none" />
-      <button type="button" id="attach" title="Attach a file">📎</button>
+      <input type="file" id="fileInput" style="display:none" multiple />
+      <button type="button" id="attach" title="Attach files">📎</button>
       <button class="send" type="submit">Send</button>
     </form>
 
@@ -62,9 +62,9 @@
     // ==== CONFIG ====
     const WORKER_PROXY_URL = 'https://lessonplans.ftwmido.workers.dev/'; // your Worker URL
     const prefersDark = true;
-    const SEND_ONLY_LAST = true;      // send only the latest user message to n8n
-    const MAX_CONTEXT_TO_SEND = 1;    // (ignored if SEND_ONLY_LAST is true)
-    const MAX_BYTES = 5 * 1024 * 1024; // 5 MB upload cap
+    const SEND_ONLY_LAST = true;      // send only latest user message to n8n
+    const MAX_CONTEXT_TO_SEND = 1;    // (ignored when SEND_ONLY_LAST = true)
+    const MAX_BYTES = 5 * 1024 * 1024; // 5 MB cap per file
 
     if (prefersDark) document.documentElement.classList.add('dark');
 
@@ -84,36 +84,24 @@
     let session = localStorage.getItem(SESSION_KEY) || crypto.randomUUID();
     localStorage.setItem(SESSION_KEY, session);
     let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-    let attachedFile = null;  // temporary only
+
+    // Multiple attachments (memory-only; not saved in history)
+    let attachedFiles = [];
 
     // ==== HELPERS ====
     function saveHistory() {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     }
 
-    // Escape only for user messages
-    function escapeHTML(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
-    // Convert assistant plain text to simple HTML:
-    // - **bold**, *italic*, clickable URLs, and lines starting with "* " become bullets.
+    // Convert assistant plain text to simple HTML (bold/italic/links/bullets)
     function formatAssistantHTML(text) {
-      // If it's already HTML, trust it (coming from your own n8n flow)
-      if (/<[a-z][\s\S]*>/i.test(text)) return text;
+      if (/<[a-z][\s\S]*>/i.test(text)) return text; // already HTML
 
-      // Safe-escape, then apply minimal formatting
       let s = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-      // Bold and italic (very lightweight markdown)
       s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-
-      // Autolink URLs
-      s = s.replace(/(https?:\/\/[^\s)]+)(\))/g, '$1$2'); // keep trailing ) if link is inside parens
       s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
 
-      // Bullets: lines that start with "* "
       const lines = s.split(/\r?\n/);
       let out = [], inList = false;
       for (const line of lines) {
@@ -127,23 +115,15 @@
         }
       }
       if (inList) out.push('</ul>');
-      s = out.join('\n');
-
-      // Newlines to <br>
-      s = s.replace(/\n/g, '<br>');
+      s = out.join('\n').replace(/\n/g, '<br>');
       return s;
     }
 
     function addMsg(role, content) {
       const div = document.createElement('div');
       div.className = `msg ${role === 'user' ? 'user' : 'bot'}`;
-
-      if (role === 'assistant') {
-        div.innerHTML = formatAssistantHTML(content); // render HTML
-      } else {
-        div.textContent = content; // keep user messages safe
-      }
-
+      if (role === 'assistant') div.innerHTML = formatAssistantHTML(content);
+      else div.textContent = content;
       chatEl.appendChild(div);
       chatEl.scrollTop = chatEl.scrollHeight;
     }
@@ -155,7 +135,7 @@
 
     function setStatus(t) { statusEl.textContent = t || ''; }
 
-    // SAFE file -> base64 via FileReader (prevents call stack overflow)
+    // Safe File → base64 using FileReader
     function fileToBase64(file) {
       return new Promise((resolve, reject) => {
         const r = new FileReader();
@@ -174,12 +154,13 @@
 
     // ==== EVENTS ====
     attachBtn.addEventListener('click', () => fileInput.click());
+
     fileInput.addEventListener('change', () => {
-      if (fileInput.files.length > 0) {
-        attachedFile = fileInput.files[0];
-        setStatus(`Attached: ${attachedFile.name}`);
+      attachedFiles = Array.from(fileInput.files || []);
+      if (attachedFiles.length > 0) {
+        const names = attachedFiles.map(f => f.name).join(', ');
+        setStatus(`Attached: ${names}`);
       } else {
-        attachedFile = null;
         setStatus('');
       }
     });
@@ -187,16 +168,20 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const text = input.value.trim();
-      if (!text && !attachedFile) return;
+      const hasFiles = attachedFiles.length > 0;
+      if (!text && !hasFiles) return;
       input.value = '';
 
-      // user message (never HTML-injected)
+      // Labels only in UI/history (never base64)
       if (text) {
         history.push({ role: 'user', content: text });
         addMsg('user', text);
       }
-      if (attachedFile) {
-        addMsg('user', `[File: ${attachedFile.name}]`);
+      if (hasFiles) {
+        const label = attachedFiles.length === 1
+          ? `[File: ${attachedFiles[0].name}]`
+          : `[Files: ${attachedFiles.map(f => f.name).join(', ')}]`;
+        addMsg('user', label);
       }
       saveHistory();
 
@@ -205,29 +190,41 @@
       history.push(typing); addMsg('assistant', '…'); setStatus('Thinking…');
 
       try {
-        let fileData = null;
-        if (attachedFile) {
-          if (attachedFile.size > MAX_BYTES) {
-            history = history.filter(m => m !== typing);
-            history.push({ role: 'assistant', content: `Error: File too large (> ${Math.round(MAX_BYTES/1024/1024)} MB)` });
-            saveHistory(); renderHistory(); setStatus('');
-            attachedFile = null; fileInput.value = '';
-            return;
-          }
-          const base64 = await fileToBase64(attachedFile);
-          fileData = { name: attachedFile.name, type: attachedFile.type, size: attachedFile.size, data: base64 };
+        // Size guard
+        const tooBig = attachedFiles.find(f => f.size > MAX_BYTES);
+        if (tooBig) {
+          history = history.filter(m => m !== typing);
+          history.push({ role: 'assistant', content: `Error: ${tooBig.name} is too large (> ${Math.round(MAX_BYTES/1024/1024)} MB)` });
+          saveHistory(); renderHistory(); setStatus('');
+          attachedFiles = []; fileInput.value = '';
+          return;
         }
 
-        const lastText = text || (attachedFile ? `[File: ${attachedFile.name}]` : '');
+        // Convert all files to base64 (do NOT store in history)
+        let filesData = [];
+        if (hasFiles) {
+          filesData = await Promise.all(attachedFiles.map(async (f) => {
+            const data = await fileToBase64(f);
+            return { name: f.name, type: f.type, size: f.size, data };
+          }));
+        }
+
+        const lastLabel = hasFiles
+          ? (text ? `${text} ` : '') +
+            (attachedFiles.length === 1
+              ? `[File: ${attachedFiles[0].name}]`
+              : `[Files: ${attachedFiles.map(f => f.name).join(', ')}]`)
+          : (text || '');
+
         const msgsToSend = SEND_ONLY_LAST
-          ? [{ role: 'user', content: lastText }]
+          ? [{ role: 'user', content: lastLabel || '(file upload)' }]
           : history.filter(m => m.content !== '…').slice(-MAX_CONTEXT_TO_SEND);
 
         const payload = {
           session_id: session,
           messages: msgsToSend,
-          last_user_message: lastText,
-          file: fileData,
+          last_user_message: lastLabel || '(file upload)',
+          files: filesData, // << multiple files here
           metadata: { client: 'static-site', ts: Date.now() }
         };
 
@@ -245,7 +242,7 @@
           throw new Error(errText || res.statusText);
         }
 
-        // JSON or plain text responses
+        // JSON or text response
         const ct = (res.headers.get('content-type') || '').toLowerCase();
         let reply = '';
         if (ct.includes('application/json')) {
@@ -257,17 +254,13 @@
         }
 
         history.push({ role: 'assistant', content: reply });
-        saveHistory();
-        renderHistory();
-        setStatus('');
+        saveHistory(); renderHistory(); setStatus('');
       } catch (err) {
         history = history.filter(m => m !== typing);
         history.push({ role: 'assistant', content: 'Error: ' + err.message });
-        saveHistory();
-        renderHistory();
-        setStatus('');
+        saveHistory(); renderHistory(); setStatus('');
       } finally {
-        attachedFile = null;
+        attachedFiles = [];
         fileInput.value = '';
       }
     });
